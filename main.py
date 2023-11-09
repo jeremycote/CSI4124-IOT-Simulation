@@ -92,7 +92,13 @@ class Sink(Input, SimulationComponent):
     """"""
 
     def process_input(self, message: Message, time: int) -> bool:
-        return super().process_input(message, time)
+        # Message has left the system through a sink.
+        message.departure_time = time
+
+        print("Sink", message)
+
+        # A sink will always accept messages
+        return True
 
     def tick(self, time: int, delta: int):
         return super().tick(time, delta)
