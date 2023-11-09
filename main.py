@@ -146,6 +146,9 @@ class OnOffServer(Server):
     # How many messages can the process hold in it's queue
     capacity: int
 
+    # Probability of a message being lost if inputted while the server is off
+    loss_propability: float
+
     # Is the server ON or OFF
     state: OnOffServerState = OnOffServerState.OFF
 
@@ -165,7 +168,11 @@ class OnOffServer(Server):
     message_service_effectuated: int = 0
 
     def __init__(
-        self, service_lambda: float, state_flop_lambda: float, capacity: int
+        self,
+        service_lambda: float,
+        state_flop_lambda: float,
+        capacity: int,
+        loss_probability: float,
     ) -> None:
         """Construct an OnOffServer
 
@@ -176,6 +183,7 @@ class OnOffServer(Server):
         self.service_lambda = service_lambda
         self.state_flop_lambda = state_flop_lambda
         self.capacity = capacity
+        self.loss_propability = loss_probability
 
     def output_message(self, time: int):
         if self.empty():
@@ -211,9 +219,11 @@ class OnOffServer(Server):
         return len(self.messages) == 0
 
     def process_input(self, message: Message, time: int) -> bool:
-        # Do not accept messages if the server is off
+        # If the server is off, simulate message loss
         if self.state is OnOffServerState.OFF:
-            return False
+            loss_instance = np.random.uniform(0, 1)
+            if loss_instance > self.loss_propability:
+                return True
 
         if self.message_processing_complete():
             self.output_message(time)
@@ -269,7 +279,9 @@ class OnOffServer(Server):
 
 if __name__ == "__main__":
     message_generator = MessageGenerator(l=1)
-    server = OnOffServer(service_lambda=1, state_flop_lambda=1, capacity=1)
+    server = OnOffServer(
+        service_lambda=1, state_flop_lambda=1, capacity=1, loss_probability=0.5
+    )
     sink = Sink()
 
     message_generator.register_output_listener(server)
