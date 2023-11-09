@@ -18,7 +18,7 @@ class SimulationComponent(ABC):
     """Protocol for objects that are orchastrated by the simulation"""
 
     @abstractmethod
-    def tick(self, time: int):
+    def tick(self, time: int, delta: int):
         """Method called every tick of the simulation"""
 
 
@@ -50,7 +50,7 @@ class Simulation:
         """
         for i in range(start_time, end_time):
             for component in self.components:
-                component.tick(i)
+                component.tick(i, 1)
 
 
 class Input(ABC):
@@ -94,8 +94,8 @@ class Sink(Input, SimulationComponent):
     def process_input(self, message: Message, time: int) -> bool:
         return super().process_input(message, time)
 
-    def tick(self, time: int):
-        return super().tick(time)
+    def tick(self, time: int, delta: int):
+        return super().tick(time, delta)
 
 
 class MessageGenerator(Generator):
@@ -117,7 +117,7 @@ class MessageGenerator(Generator):
         super().__init__()
         self.l = l
 
-    def tick(self, time: int):
+    def tick(self, time: int, delta: int):
         if self.next_generation <= time:
             # Round the inter arrival time to the nearest millisecond
             # By generating inter arrival times using an exponential distribution, the output of the generator will follow a poisson distribution
@@ -131,76 +131,139 @@ class MessageGenerator(Generator):
 class OnOffServer(Server):
     """A server that can be ON or OFF"""
 
+    # Message queue
+    messages: List[Message] = []
+
     # The lambda parameter to generate service times
-    l: float
+    service_lambda: float
+
+    # How many messages can the process hold in it's queue
+    capacity: int
 
     # Is the server ON or OFF
-    state: OnOffServerState = OnOffServerState.ON
+    state: OnOffServerState = OnOffServerState.OFF
 
-    # The message that the server is currently processing
-    message: Optional[Message] = None
+    # Time at which the server state will toggle from ON->OFF or OFF->ON
+    state_flop_time: int = 0
 
-    # How long it will take to process the message
+    # The lambda parameter to generate state flip flops
+    state_flop_lambda: float
+
+    # How long it will take to process the current message
     message_service_length: Optional[int] = None
 
     # When did message processing start
     message_service_start: Optional[int] = None
 
-    def __init__(self, l: float) -> None:
+    # How much work has been done on the message. This is used to keep track of the server being ON/OFF.
+    message_service_effectuated: int = 0
+
+    def __init__(
+        self, service_lambda: float, state_flop_lambda: float, capacity: int
+    ) -> None:
         """Construct an OnOffServer
 
         Args:
             l (float): Lambda parameter for generating service times
         """
         super().__init__()
-        self.l = l
+        self.service_lambda = service_lambda
+        self.state_flop_lambda = state_flop_lambda
+        self.capacity = capacity
 
     def output_message(self, time: int):
-        if self.message is None:
+        if self.empty():
             raise ValueError("No message to output")
 
-        self.message.work_time += self.message_service_length
+        self.messages[0].work_time += self.message_service_length
 
-        print(f"Departing {self.message}")
+        print(f"Departing {self.messages[0]}")
 
-        self.output(self.message, time)
-        self.message = None
+        self.output(self.messages[0], time)
+
+        # Clear data to prepare for the next message
+        self.message_service_effectuated = 0
+        self.message_service_length = None
+        self.message_service_start = None
+
+        self.messages.pop(0)
+
+    def message_processing_complete(self) -> bool:
+        """Returns True if the currently processed message is complete.
+
+        Return False if there are no messages to process
+        """
+        if self.empty() or self.message_service_length is None:
+            return False
+
+        return self.message_service_effectuated >= self.message_service_length
+
+    def full(self) -> bool:
+        return len(self.messages) >= self.capacity
+
+    def empty(self) -> bool:
+        return len(self.messages) == 0
 
     def process_input(self, message: Message, time: int) -> bool:
         # Do not accept messages if the server is off
         if self.state is OnOffServerState.OFF:
             return False
 
-        if (
-            self.message
-            and time <= self.message_service_start + self.message_service_length
-        ):
-            # Message is complete
+        if self.message_processing_complete():
             self.output_message(time)
-        elif self.message:
+
+        if self.full():
             return False
 
-        self.message = message
+        self.messages.append(message)
         self.message_service_start = time
 
         # Generate a message service length rounded to the nearest millisecond
-        self.message_service_length = round(np.random.exponential(self.l) * 1000)
+        self.message_service_length = round(
+            np.random.exponential(self.service_lambda) * 1000
+        )
 
-        print(self.message)
+        print(message)
         return True
 
-    def tick(self, time: int):
-        if (
-            self.message
-            and time <= self.message_service_start + self.message_service_length
+    def tick(self, time: int, delta: int):
+        processing_completed_messages = True
+
+        # Process all completed messages from the queue
+        while (
+            processing_completed_messages
+            and self.state == OnOffServerState.ON
+            and not self.empty()
         ):
-            # Message is complete
-            self.output_message(time)
+            if self.message_processing_complete():
+                self.output_message(time)
+            else:
+                processing_completed_messages = False
+
+        if self.state == OnOffServerState.ON and not self.empty():
+            # Increment effectuated work of current message
+            self.message_service_effectuated += delta
+
+        if self.state_flop_time <= time:
+            self.state_flop_time += round(
+                np.random.exponential(self.state_flop_lambda) * 1000
+            )
+
+            # print(
+            #     f"Toggling server state from {self.state} to {OnOffServerState.ON if self.state == OnOffServerState.OFF else OnOffServerState.OFF} at time {time}"
+            # )
+
+            # Toggle the server state
+            self.state = (
+                OnOffServerState.ON
+                if self.state == OnOffServerState.OFF
+                else OnOffServerState.OFF
+            )
 
 
 if __name__ == "__main__":
     message_generator = MessageGenerator(l=1)
-    server = OnOffServer(l=1)
+    server = OnOffServer(service_lambda=1, state_flop_lambda=1, capacity=1)
     sink = Sink()
 
     message_generator.register_output_listener(server)
