@@ -23,16 +23,31 @@ class SimulationComponent(ABC):
 
 
 class Simulation:
+    """Holds the state of the simulation."""
+
+    # Simulation time represented in milliseconds
     time: int = 0
+
+    # Components to orchestrate in the simulation
     components: List[SimulationComponent] = []
 
-    def __init__(self) -> None:
-        pass
-
     def register_component(self, component: SimulationComponent):
+        """Register a component in the simulation runtime.
+
+        When a component is registered, their tick function is called every ms of simulation time
+
+        Args:
+            component (SimulationComponent): Component to register
+        """
         self.components.append(component)
 
     def simulate(self, start_time: int = 0, end_time: int = 10000):
+        """Simulate from start to end time
+
+        Args:
+            start_time (int, optional): Start time of the simulation. Defaults to 0.
+            end_time (int, optional): End time of the simulation. Defaults to 10000.
+        """
         for i in range(start_time, end_time):
             for component in self.components:
                 component.tick(i)
@@ -94,12 +109,18 @@ class MessageGenerator(Generator):
 
     # Create message generator with lambda parameter
     def __init__(self, l: float) -> None:
+        """Construct a MessageGenerator that follows a poisson distribution for message generation.
+
+        Args:
+            l (float): lambda parameter of the poisson distribution
+        """
         super().__init__()
         self.l = l
 
     def tick(self, time: int):
         if self.next_generation <= time:
             # Round the inter arrival time to the nearest millisecond
+            # By generating inter arrival times using an exponential distribution, the output of the generator will follow a poisson distribution
             inter_arrival_time = round(np.random.exponential(scale=1 / self.l) * 1000)
             self.next_generation += inter_arrival_time
 
