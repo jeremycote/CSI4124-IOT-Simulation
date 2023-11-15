@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import List, Optional
 
-from message import Message
+from message import Message, MessageState
 
 import numpy as np
 
@@ -26,10 +26,14 @@ class Simulation:
     """Holds the state of the simulation."""
 
     # Simulation time represented in milliseconds
-    time: int = 0
+    time: int
 
     # Components to orchestrate in the simulation
-    components: List[SimulationComponent] = []
+    components: List[SimulationComponent]
+
+    def __init__(self) -> None:
+        self.time = 0
+        self.components = []
 
     def register_component(self, component: SimulationComponent):
         """Register a component in the simulation runtime.
@@ -52,13 +56,20 @@ class Simulation:
             for component in self.components:
                 component.tick(i, 1)
 
+    def __str__(self) -> str:
+        result = ""
+        for component in self.components:
+            result += f"{component}\n\n"
+
+        return result
+
 
 class Input(ABC):
     """Protocol for objects that can take the output of other objects"""
 
     @abstractmethod
     def process_input(self, message: Message, time: int) -> bool:
-        """Returns True if the input is accepeted"""
+        """Returns True if the input was consumed"""
 
 
 class Output(ABC):
@@ -91,11 +102,27 @@ class Generator(Output, SimulationComponent):
 class Sink(Input, SimulationComponent):
     """"""
 
+    label: str
+    # Message State to set messages that enter this sink.
+    message_state: Optional[MessageState]
+    messages: List[Message]
+
+    def __init__(
+        self, label: str, message_state: Optional[MessageState] = None
+    ) -> None:
+        super().__init__()
+        self.label = label
+        self.message_state = message_state
+        self.messages = []
+
     def process_input(self, message: Message, time: int) -> bool:
         # Message has left the system through a sink.
         message.departure_time = time
+        if self.message_state:
+            message.state = self.message_state
 
-        print("Sink", message)
+        print(self.label, message)
+        self.messages.append(message)
 
         # A sink will always accept messages
         return True
@@ -103,18 +130,29 @@ class Sink(Input, SimulationComponent):
     def tick(self, time: int, delta: int):
         return super().tick(time, delta)
 
+    def __str__(self) -> str:
+        result = f"Sink {self.label}. Messages:\n"
+        for message in self.messages:
+            result += f"----------\n{message}----------"
+        return result
+
 
 class MessageGenerator(Generator):
     """Generator for IOT Messages"""
 
+    n_messages_generated: int
+
     # Time at which to generate the next message
-    next_generation: int = 0
+    next_generation: int
 
     # Lambda value for poisson distribution
     l: float
 
+    # Lifetime value for the message, once this amount of time has passed, the message is expired and leaves the system
+    lifetime: int
+
     # Create message generator with lambda parameter
-    def __init__(self, l: float) -> None:
+    def __init__(self, l: float, lifetime: int) -> None:
         """Construct a MessageGenerator that follows a poisson distribution for message generation.
 
         Args:
@@ -122,6 +160,9 @@ class MessageGenerator(Generator):
         """
         super().__init__()
         self.l = l
+        self.lifetime = lifetime
+        self.n_messages_generated = 0
+        self.next_generation = 0
 
     def tick(self, time: int, delta: int):
         if self.next_generation <= time:
@@ -131,14 +172,21 @@ class MessageGenerator(Generator):
             self.next_generation += inter_arrival_time
 
             # Output the message from the generator
-            self.output(Message(arrival_time=time), time)
+            self.output(
+                Message(arrival_time=time, expiration_time=time + self.lifetime), time
+            )
+
+            self.n_messages_generated += 1
+
+    def __str__(self) -> str:
+        return f"Message Generator created {self.n_messages_generated} messages using lambda={self.l} and lifetime={self.lifetime}"
 
 
 class OnOffServer(Server):
     """A server that can be ON or OFF"""
 
     # Message queue
-    messages: List[Message] = []
+    messages: List[Message]
 
     # The lambda parameter to generate service times
     service_lambda: float
@@ -149,23 +197,29 @@ class OnOffServer(Server):
     # Probability of a message being lost if inputted while the server is off
     loss_propability: float
 
+    # Destination for messages that expire or are lost
+    lost_messages_output: Optional[Input]
+
     # Is the server ON or OFF
-    state: OnOffServerState = OnOffServerState.OFF
+    state: OnOffServerState
+
+    # Number of times that the state changed
+    n_state_toggles: int
 
     # Time at which the server state will toggle from ON->OFF or OFF->ON
-    state_flop_time: int = 0
+    state_flop_time: int
 
     # The lambda parameter to generate state flip flops
     state_flop_lambda: float
 
     # How long it will take to process the current message
-    message_service_length: Optional[int] = None
+    message_service_length: Optional[int]
 
     # When did message processing start
-    message_service_start: Optional[int] = None
+    message_service_start: Optional[int]
 
     # How much work has been done on the message. This is used to keep track of the server being ON/OFF.
-    message_service_effectuated: int = 0
+    message_service_effectuated: int
 
     def __init__(
         self,
@@ -184,6 +238,21 @@ class OnOffServer(Server):
         self.state_flop_lambda = state_flop_lambda
         self.capacity = capacity
         self.loss_propability = loss_probability
+        self.messages = []
+        self.state = OnOffServerState.OFF
+        self.n_state_toggles = 0
+        self.state_flop_time = 0
+        self.message_service_length = None
+        self.message_service_start = None
+        self.message_service_effectuated = 0
+
+    def remove_processing_message(self):
+        self.message_service_effectuated = 0
+        self.message_service_length = None
+        self.message_service_start = None
+
+        if not self.empty():
+            self.messages.pop(0)
 
     def output_message(self, time: int):
         if self.empty():
@@ -196,11 +265,28 @@ class OnOffServer(Server):
         self.output(self.messages[0], time)
 
         # Clear data to prepare for the next message
-        self.message_service_effectuated = 0
-        self.message_service_length = None
-        self.message_service_start = None
+        self.remove_processing_message()
 
-        self.messages.pop(0)
+    def lost_message(self, message: Message, time: int):
+        message.state = MessageState.LOST
+        self.lost_messages_output.process_input(message, time)
+
+    def cleanup_expired_messages(self, time: int):
+        if self.empty():
+            return
+
+        if self.messages[0].expiration_time <= time:
+            print("expired", message, time)
+            message.state = MessageState.EXPIRED
+            self.lost_messages_output.process_input(message, time)
+            self.remove_processing_message()
+
+        # Traverse in reverse order to remove items without interfering with the rest of the loop
+        for i, message in reversed(list(enumerate(self.messages))):
+            if message.expiration_time <= time:
+                expired_message = self.messages.pop(i)
+                expired_message.state = MessageState.EXPIRED
+                self.lost_messages_output.process_input(message, time)
 
     def message_processing_complete(self) -> bool:
         """Returns True if the currently processed message is complete.
@@ -223,13 +309,17 @@ class OnOffServer(Server):
         if self.state is OnOffServerState.OFF:
             loss_instance = np.random.uniform(0, 1)
             if loss_instance > self.loss_propability:
+                self.lost_message(message, time)
                 return True
 
+        # Check if any messages are done processing and output them. Doing this before checking if the queue is full is important.
         if self.message_processing_complete():
             self.output_message(time)
 
+        # If the queue is full, the message is lost
         if self.full():
-            return False
+            self.lost_message(message, time)
+            return True
 
         self.messages.append(message)
         self.message_service_start = time
@@ -239,7 +329,7 @@ class OnOffServer(Server):
             np.random.exponential(self.service_lambda) * 1000
         )
 
-        print(message)
+        print("Server Received", message)
         return True
 
     def tick(self, time: int, delta: int):
@@ -256,6 +346,8 @@ class OnOffServer(Server):
             else:
                 processing_completed_messages = False
 
+        self.cleanup_expired_messages(time)
+
         if self.state == OnOffServerState.ON and not self.empty():
             # Increment effectuated work of current message
             self.message_service_effectuated += delta
@@ -265,32 +357,46 @@ class OnOffServer(Server):
                 np.random.exponential(self.state_flop_lambda) * 1000
             )
 
-            # print(
-            #     f"Toggling server state from {self.state} to {OnOffServerState.ON if self.state == OnOffServerState.OFF else OnOffServerState.OFF} at time {time}"
-            # )
-
             # Toggle the server state
             self.state = (
                 OnOffServerState.ON
                 if self.state == OnOffServerState.OFF
                 else OnOffServerState.OFF
             )
+            self.n_state_toggles += 1
+
+    def register_loss_output_listener(self, destination: Input):
+        self.lost_messages_output = destination
+
+    def __str__(self) -> str:
+        result = f"OnOffServer toggled state {self.n_state_toggles} times. Messages:\n"
+        for message in self.messages:
+            result += f"----------\n{message}----------"
+        return result
 
 
 if __name__ == "__main__":
-    message_generator = MessageGenerator(l=1)
+    message_generator = MessageGenerator(l=1, lifetime=100000)
     server = OnOffServer(
-        service_lambda=1, state_flop_lambda=1, capacity=1, loss_probability=0.5
+        service_lambda=1, state_flop_lambda=1, capacity=3, loss_probability=0.5
     )
-    sink = Sink()
+    sink = Sink("Completed Messages", MessageState.COMPLETED)
+    lostSink = Sink("Lost / Expired Messages")
 
     message_generator.register_output_listener(server)
     server.register_output_listener(sink)
+    server.register_loss_output_listener(lostSink)
 
     simulation = Simulation()
     simulation.register_component(message_generator)
     simulation.register_component(server)
     simulation.register_component(sink)
+    simulation.register_component(lostSink)
 
     # Simulate for 10000ms -> 10s
     simulation.simulate(0, 10000)
+
+    print(
+        "##############################\n# Final State:               #\n##############################"
+    )
+    print(simulation)
