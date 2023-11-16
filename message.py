@@ -47,3 +47,9 @@ class Message:
 
     def __str__(self) -> str:
         return f"Message {self.uuid}:\nState: {self.state}\nArrival Time: {self.arrival_time},\nDeparture Time: {self.departure_time},\nWait Time: {self.departure_time},\nWork Time: {self.work_time},\nExpiration Time: {self.expiration_time}\n"
+
+    def response_time(self) -> Optional[int]:
+        if self.departure_time is None:
+            return None
+
+        return self.departure_time - self.arrival_time

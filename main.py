@@ -107,13 +107,20 @@ class Sink(Input, SimulationComponent):
     message_state: Optional[MessageState]
     messages: List[Message]
 
+    # Should print debug messages
+    debug: bool
+
     def __init__(
-        self, label: str, message_state: Optional[MessageState] = None
+        self,
+        label: str,
+        message_state: Optional[MessageState] = None,
+        debug: bool = False,
     ) -> None:
         super().__init__()
         self.label = label
         self.message_state = message_state
         self.messages = []
+        self.debug = debug
 
     def process_input(self, message: Message, time: int) -> bool:
         # Message has left the system through a sink.
@@ -121,7 +128,8 @@ class Sink(Input, SimulationComponent):
         if self.message_state:
             message.state = self.message_state
 
-        print(self.label, message)
+        if self.debug:
+            print(self.label, message)
         self.messages.append(message)
 
         # A sink will always accept messages
@@ -165,6 +173,9 @@ class MessageGenerator(Generator):
         self.next_generation = 0
 
     def tick(self, time: int, delta: int):
+        if self.l == 0:
+            return
+
         if self.next_generation <= time:
             # Round the inter arrival time to the nearest millisecond
             # By generating inter arrival times using an exponential distribution, the output of the generator will follow a poisson distribution
@@ -221,12 +232,16 @@ class OnOffServer(Server):
     # How much work has been done on the message. This is used to keep track of the server being ON/OFF.
     message_service_effectuated: int
 
+    # Should print debug messages
+    debug: bool
+
     def __init__(
         self,
         service_lambda: float,
         state_flop_lambda: float,
         capacity: int,
         loss_probability: float,
+        debug: bool = False,
     ) -> None:
         """Construct an OnOffServer
 
@@ -245,6 +260,7 @@ class OnOffServer(Server):
         self.message_service_length = None
         self.message_service_start = None
         self.message_service_effectuated = 0
+        self.debug = debug
 
     def remove_processing_message(self):
         self.message_service_effectuated = 0
@@ -260,7 +276,8 @@ class OnOffServer(Server):
 
         self.messages[0].work_time += self.message_service_length
 
-        print(f"Departing {self.messages[0]}")
+        if self.debug:
+            print(f"Departing {self.messages[0]}")
 
         self.output(self.messages[0], time)
 
@@ -276,7 +293,8 @@ class OnOffServer(Server):
             return
 
         if self.messages[0].expiration_time <= time:
-            print("expired", self.messages[0], time)
+            if self.debug:
+                print("expired", self.messages[0], time)
             self.messages[0].state = MessageState.EXPIRED
             # TODO: This might not be right
             self.messages[0].work_time = self.message_service_effectuated
@@ -331,7 +349,8 @@ class OnOffServer(Server):
             np.random.exponential(self.service_lambda) * 1000
         )
 
-        print("Server Received", message)
+        if self.debug:
+            print("Server Received", message)
         return True
 
     def tick(self, time: int, delta: int):
