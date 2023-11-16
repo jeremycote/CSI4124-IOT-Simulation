@@ -276,9 +276,11 @@ class OnOffServer(Server):
             return
 
         if self.messages[0].expiration_time <= time:
-            print("expired", message, time)
-            message.state = MessageState.EXPIRED
-            self.lost_messages_output.process_input(message, time)
+            print("expired", self.messages[0], time)
+            self.messages[0].state = MessageState.EXPIRED
+            # TODO: This might not be right
+            self.messages[0].work_time = self.message_service_effectuated
+            self.lost_messages_output.process_input(self.messages[0], time)
             self.remove_processing_message()
 
         # Traverse in reverse order to remove items without interfering with the rest of the loop
@@ -376,7 +378,7 @@ class OnOffServer(Server):
 
 
 if __name__ == "__main__":
-    message_generator = MessageGenerator(l=1, lifetime=100000)
+    message_generator = MessageGenerator(l=1, lifetime=2000)
     server = OnOffServer(
         service_lambda=1, state_flop_lambda=1, capacity=3, loss_probability=0.5
     )
@@ -400,3 +402,20 @@ if __name__ == "__main__":
         "##############################\n# Final State:               #\n##############################"
     )
     print(simulation)
+
+    print(
+        "##############################\n# Summary:                   #\n##############################"
+    )
+
+    print(
+        f"{len([message for message in sink.messages if message.state is MessageState.COMPLETED])} messages were completed"
+    )
+    print(
+        f"{len([message for message in server.messages if message.state is MessageState.IN_SYSTEM])} messages were still in the system"
+    )
+    print(
+        f"{len([message for message in lostSink.messages if message.state is MessageState.LOST])} messages were lost"
+    )
+    print(
+        f"{len([message for message in lostSink.messages if message.state is MessageState.EXPIRED])} messages expired"
+    )
