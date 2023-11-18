@@ -6,6 +6,8 @@ from message import Message, MessageState
 
 import numpy as np
 
+from simulation import SimulationParameters, SimulationResults
+
 
 class OnOffServerState(Enum):
     """The state of an ON OFF Server"""
@@ -394,6 +396,67 @@ class OnOffServer(Server):
         for message in self.messages:
             result += f"----------\n{message}----------"
         return result
+
+
+def run_simulation(simulation_parameters: SimulationParameters) -> SimulationResults:
+    message_generator = MessageGenerator(
+        l=simulation_parameters.message_lambda,
+        lifetime=simulation_parameters.message_lifetime,
+    )
+    server = OnOffServer(
+        service_lambda=simulation_parameters.service_lambda,
+        state_flop_lambda=simulation_parameters.on_off_lambda,
+        capacity=simulation_parameters.capacity,
+        loss_probability=simulation_parameters.loss_probability,
+    )
+    sink = Sink("Completed Messages", MessageState.COMPLETED)
+    lostSink = Sink("Lost / Expired Messages")
+
+    message_generator.register_output_listener(server)
+    server.register_output_listener(sink)
+    server.register_loss_output_listener(lostSink)
+
+    simulation = Simulation()
+    simulation.register_component(message_generator)
+    simulation.register_component(server)
+    simulation.register_component(sink)
+    simulation.register_component(lostSink)
+
+    # Simulate for 10000ms -> 10s
+    simulation.simulate(0, simulation_parameters.simulation_length)
+
+    return SimulationResults(
+        n_messages_generated=message_generator.n_messages_generated,
+        n_messages_lost=len(
+            [
+                message
+                for message in lostSink.messages
+                if message.state is MessageState.LOST
+            ]
+        ),
+        n_messages_expired=len(
+            [
+                message
+                for message in lostSink.messages
+                if message.state is MessageState.EXPIRED
+            ]
+        ),
+        n_messages_completed=len(
+            [
+                message
+                for message in sink.messages
+                if message.state is MessageState.COMPLETED
+            ]
+        ),
+        averate_response_time=(
+            (
+                sum([message.response_time() for message in sink.messages])
+                / len(sink.messages)
+            )
+            if len(sink.messages) > 0
+            else 0
+        ),
+    )
 
 
 if __name__ == "__main__":
